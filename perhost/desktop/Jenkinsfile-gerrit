@@ -1,0 +1,73 @@
+#!groovy
+
+// The file contains some assumptions on how the build machine is set up.
+// See https://github.com/argouml-tigris-org/argouml/wiki/Jenkins-configuration
+
+//  triggers {
+//    gerrit customUrl: '',
+//      serverName: 'GerritHub',
+//      triggerOnEvents: [patchsetCreated()],
+//      gerritProjects: [[branches: [[compareType: 'PLAIN', pattern: 'master']],
+//                        compareType: 'PLAIN',
+//                        disableStrictForbiddenFileVerification: false,
+//                        pattern: 'argouml-tigris-org/argouml-i18n-sv']]
+//  }
+
+node {
+  
+  stage('checkout') {
+    checkout([
+      $class: 'GitSCM',
+      branches: [[name: '*/master']],
+      extensions: [
+        [$class: 'BuildSingleRevisionOnly'],
+        [$class: 'CleanBeforeCheckout', deleteUntrackedNestedRepositories: true]
+      ],
+      userRemoteConfigs: [[
+        name: '${GERRIT_PROJECT}',
+        url: 'https://github.com/${GERRIT_PROJECT}'
+      ]],
+      changelog: false,
+      poll: false
+    ])
+
+    // Fetch the changeset to a local branch using the build parameters provided to the
+    // build by the Gerrit plugin...
+    def changeBranch = "change-${GERRIT_CHANGE_NUMBER}-${GERRIT_PATCHSET_NUMBER}"
+    sh "git fetch ${GERRIT_PROJECT} ${GERRIT_REFSPEC}:${changeBranch}"
+    sh "git checkout ${changeBranch}"
+  }
+
+  def env = docker.image('maven:3-ibmjava-8')
+
+  stage('compile') {
+    timeout(time:1, unit: 'HOURS') {
+      env.inside('-v maven-repo:/var/maven/.m2 -e MAVEN_CONFIG=/var/maven/.m2')  {
+        withMaven() {
+          sh '$MVN_CMD -Duser.home=/var/maven -B compile'
+        }
+      }
+    }
+  }
+
+  stage('test') {
+    timeout(time:1, unit: 'HOURS') {
+      env.inside('-v maven-repo:/var/maven/.m2 -e MAVEN_CONFIG=/var/maven/.m2') {
+        withMaven() {
+          sh '$MVN_CMD -Duser.home=/var/maven -B test'
+        }
+      }
+    }
+  }
+
+  stage('site') {
+    timeout(time:1, unit: 'HOURS') {
+      env.inside('-v maven-repo:/var/maven/.m2 -e MAVEN_CONFIG=/var/maven/.m2') {
+        withMaven(options: [junitPublisher(disabled: true,
+                                           healthScaleFactor: 0.0)]) {
+          sh '$MVN_CMD -Duser.home=/var/maven -B site'
+        }
+      }
+    }
+  }
+}
